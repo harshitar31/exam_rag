@@ -12,7 +12,7 @@ from langchain.schema import HumanMessage
 # ================= CONFIG =================
 BASE_URL = "http://dspace.amritanet.edu:8080"
 START_URL = "http://dspace.amritanet.edu:8080/xmlui/handle/123456789/150" 
-OUTPUT_FILE = "dspace_questions_metadata3.jsonl"
+OUTPUT_FILE = "dspace_questions_metadata_new.jsonl"
 PROGRESS_FILE = "progress.txt"
 
 # Initialize Gemini LLM via LangChain
@@ -35,7 +35,7 @@ def save_progress(index):
 
 
 # ================== CRAWLER ==================
-PDF_LIMIT = 200  
+PDF_LIMIT = 250
 
 def crawl_collection(url, visited=None, pdf_counter=None):
     """Recursively crawl collections and collect PDF links, stopping after PDF_LIMIT."""
@@ -140,6 +140,8 @@ in the following JSON structure:
   "year": ...,
   "semester": ...,
   "question_text": "..."
+  "marks": ...,
+
 }}
 
 Rules:
