@@ -128,10 +128,10 @@
             <h2>Results:</h2>
             {% for r in results %}
             <div class="card">
-                <b>{{ r.course_code }} - {{ r.course_name }}</b> ({{ r.year }})<br>
-                <p>{{ r.text }}</p>
-                <a href="{{ r.pdf_link }}" target="_blank">📄 View PDF</a>
-                <small>Similarity Score: {{ "%.2f"|format(r.score) }}</small>
+                <b>{{ r.course_code }} - {{ r.course_name }}</b> ({{ r.year }}, Semester {{ r.semester }})<br>
+                <p>{{ r.question_text }}</p>
+                <a href="{{ r.file_link }}" target="_blank">📄 View PDF</a>
+                <small>Marks: {{ r.marks }} | Similarity Score: {{ "%.2f"|format(r.score) }}</small>
             </div>
             {% endfor %}
         </div>

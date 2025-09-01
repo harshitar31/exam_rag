@@ -6,6 +6,7 @@ from sentence_transformers import SentenceTransformer, models
 conn = sqlite3.connect("questions.db")
 cur = conn.cursor()
 
+# --- Updated schema with marks ---
 cur.execute("""
 CREATE TABLE IF NOT EXISTS questions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS questions (
     course_name TEXT,
     year INTEGER,
     semester INTEGER,
+    marks INTEGER,              -- added marks
     question_text TEXT,
     file_link TEXT,
     embedding TEXT
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS questions (
 """)
 conn.commit()
 
-jsonl_file = "dspace_questions_metadata3.jsonl"
+jsonl_file = "dspace_questions_metadata_new.jsonl"
 count_file = "last_count.txt"
 
 # Load last processed count
@@ -36,19 +38,20 @@ with open(jsonl_file, "r", encoding="utf-8") as f:
 
 # Get only new lines
 new_lines = lines[last_count:]
-
 print(f"Found {len(new_lines)} new entries to insert.")
 
+# Insert new questions with marks + semester
 for line in new_lines:
     obj = json.loads(line)
     cur.execute("""
-        INSERT INTO questions (course_code, course_name, year, semester, question_text, file_link)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO questions (course_code, course_name, year, semester, marks, question_text, file_link)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
         obj.get("course_code"),
         obj.get("course_name"),
         obj.get("year"),
         obj.get("semester"),
+        obj.get("marks"),    # added marks field
         obj.get("question_text"),
         obj.get("file_link")
     ))
@@ -65,17 +68,17 @@ word_embedding_model = models.Transformer(model_name)
 pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
 model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
 
-def get_embedding(cname: str, qtext: str):
+def get_embedding(cname: str, sem: str, qtext: str):
     if not qtext or not qtext.strip() or not cname or not cname.strip():
         return None
-    text = f"{cname} {qtext}"
+    text = f"{cname} semester{sem} {qtext}"
     emb = model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
     return emb.tolist()
 
-rows = cur.execute("SELECT id, course_name, question_text FROM questions WHERE embedding IS NULL").fetchall()
+rows = cur.execute("SELECT id, course_name, semester, question_text FROM questions WHERE embedding IS NULL").fetchall()
 
-for qid, cname, qtext in rows:
-    emb = get_embedding(cname, qtext)
+for qid, cname, sem, qtext in rows:
+    emb = get_embedding(cname, sem,qtext)
     if emb is not None:
         cur.execute("UPDATE questions SET embedding = ? WHERE id = ?", (json.dumps(emb), qid))
         print(f"Done for {qid}")

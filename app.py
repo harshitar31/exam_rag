@@ -15,23 +15,28 @@ model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
 conn = sqlite3.connect("questions.db")
 cur = conn.cursor()
 rows = cur.execute("""
-    SELECT id, question_text, course_code, course_name, year, file_link, embedding 
+    SELECT id, question_text, course_code, course_name, year, semester, marks, file_link, embedding 
     FROM questions
 """).fetchall()
 conn.close()
 
-ids, texts, codes, names, years, links, embs = [], [], [], [], [], [], []
-for qid, qtext, ccode, cname, year, link, emb_json in rows:
+# Store data into lists
+ids, texts, codes, names, years, semesters, marks_list, links, embs = [], [], [], [], [], [], [], [], []
+for qid, qtext, ccode, cname, year, semester, marks, link, emb_json in rows:
     ids.append(qid)
     texts.append(qtext)
     codes.append(ccode)
     names.append(cname)
     years.append(year)
+    semesters.append(semester)
+    marks_list.append(marks)
     links.append(link)
     embs.append(np.array(json.loads(emb_json)))
+
 embs = np.vstack(embs)  # shape: (num_questions, dim)
 
 
+# Search function
 def search(query, top_k=10):
     q_emb = model.encode([query], normalize_embeddings=True)
     sims = cosine_similarity(q_emb, embs)[0]
@@ -40,16 +45,19 @@ def search(query, top_k=10):
     for i in top_idx:
         results.append({
             "id": ids[i],
-            "text": texts[i],
+            "question_text": texts[i],   
             "course_code": codes[i],
             "course_name": names[i],
             "year": years[i],
-            "pdf_link": links[i],
+            "semester": semesters[i],
+            "marks": marks_list[i],
+            "file_link": links[i],     
             "score": float(sims[i])
         })
     return results
 
 
+# Flask routes
 @app.route("/", methods=["GET", "POST"])
 def index():
     results = []
