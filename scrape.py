@@ -35,7 +35,7 @@ def save_progress(index):
 
 
 # ================== CRAWLER ==================
-PDF_LIMIT = 250
+PDF_LIMIT = 350
 
 def crawl_collection(url, visited=None, pdf_counter=None):
     """Recursively crawl collections and collect PDF links, stopping after PDF_LIMIT."""
