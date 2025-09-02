@@ -8,7 +8,7 @@ cur.execute("""
     WHERE id NOT IN (
         SELECT MIN(id)
         FROM questions
-        GROUP BY question_text, course_code, year
+        GROUP BY question_text, course_code, year, course_name
     )
 """)
 
