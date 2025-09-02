@@ -64,7 +64,7 @@ def index():
     query = ""
     if request.method == "POST":
         query = request.form["query"]
-        results = search(query, top_k=20)
+        results = search(query, top_k=50)
     return render_template("index.html", results=results, query=query)
 
 
