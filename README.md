@@ -47,3 +47,7 @@
 -   **`flask`**: For building a simple web application to demonstrate the search functionality.
 ---
 
+### **Implementation** 
+![Image 1](implementation/cc.png) ![Image 2](implementation/eee.png)
+![Image 3](implementation/eng.png) ![Image 4](implementation/qm.png)
+
