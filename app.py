@@ -6,10 +6,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 app = Flask(__name__)
 
 # ---- Load local BGE-base ----
-model_name = "D:/VolumeEStuff/SEM 5/NLP/case study/bge-base-en-v1.5"
-word_embedding_model = models.Transformer(model_name)
-pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
-model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
+model = SentenceTransformer("BAAI/bge-base-en-v1.5")
 
 # Load embeddings once at startup
 conn = sqlite3.connect("questions.db")
