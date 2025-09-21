@@ -1,75 +1,56 @@
-import requests, os, re, json, shutil, subprocess
-from langchain_community.chat_models import ChatOllama
+import requests, io, os, re, json
+from bs4 import BeautifulSoup
+from PyPDF2 import PdfReader
+from langchain_ollama import ChatOllama   # modern import
 from langchain.schema import HumanMessage
 
 # ================= CONFIG =================
-LINKS_FILE = "pdf_links.jsonl"
+LINKS_FILE = "pdf_links.jsonl"   
 OUTPUT_FILE = "dspace_questions_metadata_new1.jsonl"
 PROGRESS_FILE = "progress1.txt"
-TEMP_FOLDER = "temp_pdfs"
 
-# Initialize Ollama LLM
-llm = ChatOllama(model="llama3.2:3b", temperature=0)
-os.makedirs(TEMP_FOLDER, exist_ok=True)
+llm = ChatOllama(model="llama3:8b", temperature=0)
+session = requests.Session()
 
 # ================== PROGRESS ==================
 def get_progress():
-    if os.path.exists(PROGRESS_FILE):
-        try:
-            value = int(open(PROGRESS_FILE, "r").read().strip())
-            return value
-        except ValueError:
-            return 0  # file exists but empty or invalid
-    return 0  # file doesn't exist
-
+    return int(open(PROGRESS_FILE).read().strip()) if os.path.exists(PROGRESS_FILE) else 0
 
 def save_progress(idx):
     with open(PROGRESS_FILE, "w") as f:
         f.write(str(idx))
 
-# ================== MINERU EXTRACTION ==================
-def extract_structured_text_with_mineru(pdf_path):
-    """
-    Runs MinerU CLI on a local PDF and returns a list of text blocks
-    """
-    output_json = pdf_path.replace(".pdf", "_mineru.json")
-    subprocess.run(["mineru", "-p", pdf_path, "--output", output_json], check=True)
+# ================== PDF ==================
+def extract_text_from_pdf_url(url):
+    print(f"Downloading PDF: {url}")
+    resp = session.get(url)
+    resp.raise_for_status()
+    reader = PdfReader(io.BytesIO(resp.content))
+    text = ""
+    for i, page in enumerate(reader.pages):
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text + "\n"
+        print(f"  Extracted text from page {i+1}")
+    return text.strip()
 
-    with open(output_json, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    text_blocks = [block["text"] for block in data.get("content", []) if "text" in block]
-    # Clean up MinerU JSON
-    os.remove(output_json)
-    return text_blocks
-
-# ================== JSON CLEANING ==================
 def safe_json_loads(text):
-    text = re.sub(r"```(json)?", "", text).strip()
     try:
         return json.loads(text)
-    except:
-        pass
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except:
-            pass
-    fixed_text = re.sub(r",\s*([\]}])", r"\1", text)
-    try:
-        return json.loads(fixed_text)
-    except:
-        pass
-    return [{"raw_text": text}]
+    except json.JSONDecodeError:
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except:
+                return [{"raw_text": text}]
+        return [{"raw_text": text}]
 
-# ================== LLM CALL ==================
-def extract_questions_metadata_with_llm(blocks, file_link=""):
-    all_questions = []
-    for block in blocks:
-        prompt = f"""
-You are given a block of structured exam paper text.
-Extract all valid questions in JSON format:
+def extract_questions_metadata_with_llm(pdf_text, file_link=""):
+    prompt = f"""
+You are given a question paper text.
+Split it into individual questions and extract metadata for each question
+in JSON format:
 {{
   "course_code": "...",
   "course_name": "...",
@@ -80,24 +61,18 @@ Extract all valid questions in JSON format:
 }}
 
 Rules:
-- Do NOT output headings as separate objects.
+- Do NOT output headings as separate objects (e.g. "Fill in the blanks" should not be its own question).
+- Make sure the entire question text is present in "question_text."
 - Attach headings to each sub-question if needed.
+- Semester and Marks should be in integer
 - Skip incomplete or unclear questions (set question_text="None").
-- Ignore images.
+- Ignore picture/image-based questions.
 - Output ONLY a JSON array.
-Block Text:
-{block}
 """
-        response = llm([HumanMessage(content=prompt)])
-        questions = safe_json_loads(response.content)
-        for q in questions:
-            if not q.get("question_text") or q["question_text"].lower() == "none":
-                continue
-            q["file_link"] = file_link
-            all_questions.append(q)
-    return all_questions
+    response = llm([HumanMessage(content=prompt + "\n\n" + pdf_text)])
+    return response.content.strip()
 
-# ================== MAIN PIPELINE ==================
+# ================== MAIN ==================
 def main():
     print("Loading all PDF links from file...")
     with open(LINKS_FILE, "r", encoding="utf-8") as f:
@@ -110,28 +85,17 @@ def main():
         for idx, pdf in enumerate(all_pdfs[start_idx:], start=start_idx):
             try:
                 print(f"\nProcessing {idx+1}/{len(all_pdfs)}: {pdf['pdf_url']}")
+                pdf_text = extract_text_from_pdf_url(pdf["pdf_url"])
+                questions_json_text = extract_questions_metadata_with_llm(pdf_text, pdf["pdf_url"])
+                questions = safe_json_loads(questions_json_text)
 
-                # Download PDF locally
-                pdf_resp = requests.get(pdf["pdf_url"])
-                local_pdf = os.path.join(TEMP_FOLDER, f"temp_{idx}.pdf")
-                with open(local_pdf, "wb") as wf:
-                    wf.write(pdf_resp.content)
-
-                # MinerU extraction
-                text_blocks = extract_structured_text_with_mineru(local_pdf)
-
-                # LLM extraction
-                questions = extract_questions_metadata_with_llm(text_blocks, pdf["pdf_url"])
-
-                # Save output
                 for q in questions:
+                    if not q.get("question_text") or q["question_text"].lower() == "none":
+                        continue
+                    q["file_link"] = pdf["pdf_url"]
                     f_out.write(json.dumps(q, ensure_ascii=False) + "\n")
 
-                # Delete temp PDF
-                os.remove(local_pdf)
-
                 save_progress(idx + 1)
-
             except Exception as e:
                 print(f"[ERROR]: {e}")
                 print("Will retry this PDF next run.")
@@ -139,6 +103,7 @@ def main():
 
     print(f"\n[SAVED]: Progress saved at {get_progress()}/{len(all_pdfs)}")
     print(f"[APPENDED]: Data appended to {OUTPUT_FILE}")
+
 
 if __name__ == "__main__":
     main()
