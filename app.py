@@ -1,80 +1,82 @@
-import sqlite3
-import json
-import numpy as np
-from flask import Flask, render_template, request
+from flask import Flask, request, jsonify, render_template
+from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+import os
 
 app = Flask(__name__)
 
-# ---- Load BGE-base model ----
+# ================= CONFIG =================
+COLLECTION_NAME = "questions"
+SNAPSHOT_DIR = "snapshots"
+TOP_K = 20
+THRESHOLD = 0.1
+
+# ================= QDRANT =================
+client = QdrantClient(url="http://localhost:6333")
+
+# Restore snapshot if collection doesn't exist
+existing_collections = [c.name for c in client.get_collections().collections]
+if COLLECTION_NAME not in existing_collections:
+    # Recreate collection
+    client.recreate_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config={"size": 768, "distance": "Cosine"}
+    )
+
+    # Restore latest snapshot
+    if os.path.exists(SNAPSHOT_DIR) and os.listdir(SNAPSHOT_DIR):
+        latest_snapshot = sorted(os.listdir(SNAPSHOT_DIR))[-1]
+        client.snapshot.restore(
+            collection_name=COLLECTION_NAME,
+            location=os.path.join(SNAPSHOT_DIR, latest_snapshot)
+        )
+        print(f"[INFO] Restored {COLLECTION_NAME} from snapshot {latest_snapshot}")
+    else:
+        print("[WARN] No snapshot found! Database will be empty.")
+
+# ================= MODEL =================
 model = SentenceTransformer("BAAI/bge-base-en-v1.5")
 
-# ---- Load data from DB ----
-conn = sqlite3.connect("questions.db", check_same_thread=False)
-cur = conn.cursor()
-rows = cur.execute("""
-    SELECT id, question_text, course_code, course_name, year, semester, marks, file_link, embedding, images
-    FROM questions
-    WHERE embedding IS NOT NULL
-""").fetchall()
+# ================= SEARCH FUNCTION =================
+def search(query, offset=0):
+    q_emb = model.encode([query], convert_to_numpy=True, normalize_embeddings=True).tolist()
+    
+    # Search in Qdrant
+    hits = client.search(
+        collection_name=COLLECTION_NAME,
+        query_vector=q_emb[0],
+        limit=TOP_K + offset  # fetch extra for pagination
+    )
 
-# ---- Store data in lists ----
-ids, texts, codes, names, years, semesters, marks_list, links, embs, images_list = [], [], [], [], [], [], [], [], [], []
+    # Filter by threshold and paginate
+    filtered = [hit for hit in hits if hit.score >= THRESHOLD]
+    paginated = filtered[offset: offset + TOP_K]
 
-for qid, qtext, ccode, cname, year, semester, marks, link, emb_json, images_json in rows:
-    try:
-        emb_array = np.array(json.loads(emb_json))
-    except:
-        continue
-    ids.append(qid)
-    texts.append(qtext)
-    codes.append(ccode)
-    names.append(cname)
-    years.append(year)
-    semesters.append(semester)
-    marks_list.append(marks)
-    links.append(link)
-    embs.append(emb_array)
-    images_list.append(json.loads(images_json) if images_json else [])
-
-if embs:
-    embs = np.vstack(embs)
-else:
-    embs = np.zeros((0, model.get_sentence_embedding_dimension()))
-
-# ---- Search function ----
-def search(query, top_k=10):
-    q_emb = model.encode([query], normalize_embeddings=True)
-    if embs.shape[0] == 0:
-        return []
-    sims = cosine_similarity(q_emb, embs)[0]
-    top_idx = np.argsort(sims)[::-1][:top_k]
     results = []
-    for i in top_idx:
-        results.append({
-            "id": ids[i],
-            "question_text": texts[i],
-            "course_code": codes[i],
-            "course_name": names[i],
-            "year": years[i],
-            "semester": semesters[i],
-            "marks": marks_list[i],
-            "file_link": links[i],
-            "images": images_list[i],
-            "score": float(sims[i])
-        })
+    for hit in paginated:
+        payload = hit.payload
+        payload["score"] = hit.score
+        # Only include year/semester if present
+        if not payload.get("year"):
+            payload.pop("year", None)
+        if not payload.get("semester"):
+            payload.pop("semester", None)
+        results.append(payload)
     return results
 
-# ---- Flask routes ----
-@app.route("/", methods=["GET", "POST"])
-def index():
-    results = []
-    query = ""
-    if request.method == "POST":
-        query = request.form["query"]
-        results = search(query, top_k=50)
-    return render_template("index.html", results=results, query=query)
+# ================= FLASK ROUTES =================
+@app.route("/search", methods=["POST"])
+def search_route():
+    data = request.get_json()
+    query = data.get("query", "").strip()
+    offset = int(data.get("offset", 0))
+    results = search(query, offset=offset)
+    return jsonify({"results": results})
 
+@app.route("/")
+def index():
+    return render_template("index.html")  # HTML in templates/index.html
+
+# ================= RUN =================
 if __name__ == "__main__":
     app.run(debug=True)

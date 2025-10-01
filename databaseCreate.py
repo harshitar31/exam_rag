@@ -1,94 +1,98 @@
-import sqlite3
 import json
 import os
+import hashlib
 from sentence_transformers import SentenceTransformer
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import PointStruct
 
-# ---------- DB SETUP ----------
-conn = sqlite3.connect("questions.db")
-cur = conn.cursor()
+# ================= CONFIG =================
+JSONL_FILE = "dspace_questions_metadata.jsonl"
+LAST_COUNT_FILE = "last_count.txt"
+EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+COLLECTION_NAME = "questions"
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS questions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    course_code TEXT,
-    course_name TEXT,
-    year INTEGER,
-    semester INTEGER,
-    marks INTEGER,
-    question_text TEXT,
-    file_link TEXT,
-    images TEXT,      -- store list of base64 images as JSON
-    embedding TEXT
-)
-""")
-conn.commit()
+# ================= QDRANT =================
+client = QdrantClient(host="localhost", port=6333)
 
-# ---------- FILES ----------
-jsonl_file = "dspace_questions_metadata.jsonl"
-count_file = "last_count.txt"
+# Create collection if not exists
+existing_collections = [c.name for c in client.get_collections().collections]
+if COLLECTION_NAME not in existing_collections:
+    client.recreate_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config={"size": 768, "distance": "Cosine"}  # adjust size based on embedding model
+    )
 
-# Load last processed count
-last_count = 0
-if os.path.exists(count_file):
-    with open(count_file, "r") as f:
+# ================= PROGRESS =================
+if os.path.exists(LAST_COUNT_FILE):
+    with open(LAST_COUNT_FILE, "r") as f:
         last_count = int(f.read().strip() or 0)
+else:
+    last_count = 0
 
-# Read JSONL
-with open(jsonl_file, "r", encoding="utf-8") as f:
+# ================= LOAD JSONL =================
+with open(JSONL_FILE, "r", encoding="utf-8") as f:
     lines = [line.strip() for line in f if line.strip()]
 
 new_lines = lines[last_count:]
-print(f"[INFO] Found {len(new_lines)} new entries to insert.")
+print(f"[INFO] Found {len(new_lines)} new JSONL entries to process.")
 
-# ---------- INSERT NEW QUESTIONS ----------
+# ================= EMBEDDING MODEL =================
+model = SentenceTransformer(EMBEDDING_MODEL)
+
+# ================= INSERT INTO QDRANT =================
 for idx, line in enumerate(new_lines, start=1):
-    obj = json.loads(line)
-    cur.execute("""
-        INSERT INTO questions (course_code, course_name, year, semester, marks, question_text, file_link, images)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        obj.get("course_code"),
-        obj.get("course_name"),
-        obj.get("year"),
-        obj.get("semester"),
-        obj.get("marks") if obj.get("marks") is not None else None,
-        obj.get("question_text"),
-        obj.get("file_link"),
-        json.dumps(obj.get("images", []))  # store images as JSON string
-    ))
-    if idx % 50 == 0:
-        conn.commit()
-conn.commit()
-print(f"[INFO] Inserted {len(new_lines)} new rows.")
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError as e:
+        print(f"[WARN] Skipping invalid JSON line {last_count + idx}: {e}")
+        # Update last_count even if skipping, to avoid re-processing
+        last_count += 1
+        with open(LAST_COUNT_FILE, "w") as f:
+            f.write(str(last_count))
+        continue
 
-# Update last_count
-with open(count_file, "w") as f:
-    f.write(str(len(lines)))
+    course_code = obj.get("course_code", "")
+    course_name = obj.get("course_name", "")
+    semester = obj.get("semester", "")
+    year = obj.get("year")
+    file_link = obj.get("file_link", "")
 
-# ---------- EMBEDDINGS ----------
-embedding_model = SentenceTransformer("BAAI/bge-base-en-v1.5")
+    points = []
+    for q in obj.get("questions", []):
+        question_text = q.get("question_text", "").strip()
+        marks = q.get("marks", None)
 
-def get_embedding(course_name: str, semester: str, question_text: str):
-    if not question_text or not question_text.strip() or not course_name or not course_name.strip():
-        return None
-    text = f"{course_name} semester {semester} {question_text}"
-    emb = embedding_model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
-    return emb.tolist()
+        if not question_text:
+            continue
 
-rows = cur.execute("""
-SELECT id, course_name, semester, question_text 
-FROM questions 
-WHERE embedding IS NULL
-""").fetchall()
+        # Unique ID
+        qid = hashlib.md5(f"{course_code}{course_name}{question_text}".encode()).hexdigest()
 
-for idx, (qid, cname, sem, qtext) in enumerate(rows, start=1):
-    emb = get_embedding(cname, str(sem), qtext)
-    if emb is not None:
-        cur.execute("UPDATE questions SET embedding = ? WHERE id = ?", (json.dumps(emb), qid))
-    if idx % 20 == 0:
-        conn.commit()
-        print(f"[INFO] Processed {idx}/{len(rows)} embeddings")
-conn.commit()
-conn.close()
+        # Embedding
+        text_for_embedding = f"{course_name} {semester} {year or ''} {question_text}"
+        emb = model.encode(text_for_embedding, normalize_embeddings=True).tolist()
 
-print("[DONE] Added new JSONL rows + updated embeddings + stored images.")
+        payload = {
+            "course_code": course_code,
+            "course_name": course_name,
+            "semester": semester,
+            "year": year,
+            "marks": marks,
+            "question_text": question_text,
+            "file_link": file_link
+        }
+
+        points.append(PointStruct(id=qid, vector=emb, payload=payload))
+
+    if points:
+        client.upsert(collection_name=COLLECTION_NAME, points=points)
+
+    # Update last_count after processing this JSON object
+    last_count += 1
+    with open(LAST_COUNT_FILE, "w") as f:
+        f.write(str(last_count))
+
+    if idx % 5 == 0:
+        print(f"[INFO] Processed {idx}/{len(new_lines)} JSONL entries")
+
+print("[DONE] All new questions inserted into Qdrant with embeddings.")
