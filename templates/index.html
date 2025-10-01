@@ -1,141 +1,90 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Question Search</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 0;
-            background: #f8f6f6;
-            color: #2c2c2c;
-        }
-        header {
-            background: linear-gradient(135deg, #7b1113, #4a0d0e);
-            color: white;
-            padding: 25px 20px;
-            text-align: center;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        }
-        header h1 {
-            margin: 0;
-            font-size: 2rem;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-        }
-        main {
-            max-width: 900px;
-            margin: 40px auto;
-            padding: 0 20px;
-        }
-        h2 {
-            margin-bottom: 20px;
-            font-size: 1.5rem;
-            font-weight: 600;
-            color: #4a0d0e;
-        }
-        form {
-            display: flex;
-            justify-content: center;
-            margin-bottom: 40px;
-        }
-        input[type="text"] {
-            width: 65%;
-            padding: 14px;
-            border: 1px solid #ccc;
-            border-radius: 10px 0 0 10px;
-            outline: none;
-            font-size: 16px;
-            transition: border 0.2s ease, box-shadow 0.2s ease;
-        }
-        input[type="text"]:focus {
-            border-color: #7b1113;
-            box-shadow: 0 0 6px rgba(123,17,19,0.25);
-        }
-        input[type="submit"] {
-            padding: 14px 22px;
-            border: none;
-            background: #7b1113;
-            color: white;
-            font-size: 16px;
-            font-weight: 600;
-            border-radius: 0 10px 10px 0;
-            cursor: pointer;
-            transition: background 0.3s ease, transform 0.1s ease;
-        }
-        input[type="submit"]:hover {
-            background: #5e0d0f;
-        }
-        input[type="submit"]:active {
-            transform: scale(0.98);
-        }
-        .results {
-            margin-top: 20px;
-        }
-        .card {
-            background: white;
-            padding: 22px;
-            border-radius: 12px;
-            margin-bottom: 18px;
-            border-left: 5px solid #7b1113;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        .card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 6px 16px rgba(0,0,0,0.12);
-        }
-        .card b {
-            font-size: 1.1em;
-            color: #2c2c2c;
-        }
-        .card small {
-            display: block;
-            margin-top: 6px;
-            font-size: 0.85em;
-            color: #777;
-        }
-        .card p {
-            margin: 12px 0 8px;
-            line-height: 1.5;
-        }
-        .card a {
-            display: inline-block;
-            margin-top: 8px;
-            color: #7b1113;
-            text-decoration: none;
-            font-weight: 600;
-        }
-        .card a:hover {
-            text-decoration: underline;
-            color: #5e0d0f;
-        }
-    </style>
+<meta charset="UTF-8">
+<title>Question Search</title>
+<style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f4f4f9; color: #2c2c2c; margin:0; }
+    header { background-color: #7b1113; color: white; padding: 25px; text-align: center; }
+    main { max-width: 900px; margin: 40px auto; padding: 0 20px; }
+    form { display: flex; justify-content: center; gap: 10px; margin-bottom: 30px; }
+    input[type="text"] { padding: 12px; border-radius: 10px; border: 1px solid #ccc; width: 60%; }
+    button { padding: 12px 20px; border: none; background: #4a0d0e; color: white; cursor: pointer; border-radius: 10px; transition: 0.2s; }
+    button:hover { background: #2c0607; }
+    .results .card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 18px; border-left: 5px solid #7b1113; box-shadow: 0 3px 10px rgba(0,0,0,0.08); }
+    .card a { display: inline-block; margin-top: 8px; color: #7b1113; text-decoration: none; }
+    .card a:hover { text-decoration: underline; }
+    #loadMoreWrapper { text-align: center; margin-top: 20px; }
+</style>
 </head>
 <body>
-    <header>
-        <h1>Search Questions</h1>
-    </header>
-    <main>
-        <form method="post">
-            <input type="text" name="query" value="{{ query }}" placeholder="Type course name/topics...">
-            <input type="submit" value="Search">
-        </form>
+<header>
+    <h1>Search Questions</h1>
+</header>
 
-        {% if results %}
-        <div class="results">
-            <h2>Results:</h2>
-            {% for r in results %}
-            <div class="card">
-                <b>{{ r.course_code }} - {{ r.course_name }}</b> ({{ r.year }}, Semester {{ r.semester }})<br>
-                <p>{{ r.question_text }}</p>
-                <a href="{{ r.file_link }}" target="_blank">📄 View PDF</a>
-                <small>Marks: {{ r.marks }} | Similarity Score: {{ "%.2f"|format(r.score) }}</small>
-            </div>
-            {% endfor %}
+<main>
+    <form id="searchForm">
+        <input type="text" id="query" placeholder="Type course name/topics..." required>
+        <button type="submit">Search</button>
+    </form>
+
+    <div class="results" id="results"></div>
+    <div id="loadMoreWrapper" style="display:none;">
+        <button id="loadMore">Load More</button>
+    </div>
+</main>
+
+<script>
+let offset = 0;
+let currentQuery = "";
+const TOP_K = 20;
+
+document.getElementById("searchForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    currentQuery = document.getElementById("query").value.trim();
+    offset = 0;
+    if (!currentQuery) return;
+
+    const res = await fetch("/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: currentQuery, offset: offset })
+    });
+    const data = await res.json();
+
+    document.getElementById("results").innerHTML = renderResults(data.results);
+    offset += data.results.length;
+
+    document.getElementById("loadMoreWrapper").style.display = data.results.length === TOP_K ? "block" : "none";
+});
+
+document.getElementById("loadMore").addEventListener("click", async () => {
+    const res = await fetch("/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: currentQuery, offset: offset })
+    });
+    const data = await res.json();
+
+    document.getElementById("results").innerHTML += renderResults(data.results);
+    offset += data.results.length;
+
+    if (data.results.length < TOP_K) {
+        document.getElementById("loadMoreWrapper").style.display = "none";
+    }
+});
+
+function renderResults(results) {
+    return results.map(r => `
+        <div class="card">
+            <b>${r.course_code} - ${r.course_name}</b>
+            ${r.year ? ` (${r.year}${r.semester ? ', ' + r.semester : ''})` : ''}
+            <p>${r.question_text}</p>
+            <a href="${r.file_link}" target="_blank">📄 View PDF</a><br>
+            <small>Marks: ${r.marks} | Similarity Score: ${r.score.toFixed(2)}</small>
         </div>
-        {% endif %}
-    </main>
+    `).join("");
+}
+</script>
 </body>
 </html>

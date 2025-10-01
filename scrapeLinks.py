@@ -8,20 +8,17 @@ OUTPUT_LINKS_FILE = "pdf_links.jsonl"
 
 session = requests.Session()
 
-def crawl_collection(url, visited=None):
-    """Recursively crawl collections and collect PDF links."""
-    if visited is None:
-        visited = set()
+def crawl_collection(url, visited, seen_pdfs, results):
+    """Recursively crawl collections and collect unique PDF links."""
     if url in visited:
-        return []
+        return
     visited.add(url)
 
-    pdf_links = []
     print(f"Fetching collection/page: {url}")
     resp = session.get(url)
     if resp.status_code != 200:
         print(f"Failed to load: {url}")
-        return pdf_links
+        return
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -34,30 +31,42 @@ def crawl_collection(url, visited=None):
         title = a.text.strip()
 
         sub_resp = session.get(link_url)
+        if sub_resp.status_code != 200:
+            continue
         sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
 
         sub_titles = sub_soup.find_all("div", class_="artifact-title")
         if sub_titles and any("handle" in (t.find("a")["href"] if t.find("a") else "") for t in sub_titles):
             # Recurse into sub-collection
-            pdf_links.extend(crawl_collection(link_url, visited))
+            crawl_collection(link_url, visited, seen_pdfs, results)
         else:
-            # Actual item page
+            # Item page → extract PDFs
             for span in sub_soup.find_all("span", title=True):
                 if span["title"].lower().endswith(".pdf"):
                     pdf_url = link_url.replace("/handle/", "/bitstream/handle/") + "/" + span["title"]
-                    pdf_links.append({"item_title": title, "pdf_url": pdf_url})
-                    print(f"Found PDF: {pdf_url}")
 
-    return pdf_links
+                    if pdf_url not in seen_pdfs:
+                        seen_pdfs.add(pdf_url)
+                        results.append({
+                            "item_title": title,
+                            "pdf_url": pdf_url,
+                            "processed": False
+                        })
+                        print(f"Found PDF: {pdf_url}")
 
 
 def main():
     print("Starting crawl of DSpace repository...")
-    all_pdfs = crawl_collection(START_URL)
-    print(f"Total PDFs collected: {len(all_pdfs)}")
+    visited = set()
+    seen_pdfs = set()
+    results = []
+
+    crawl_collection(START_URL, visited, seen_pdfs, results)
+
+    print(f"Total unique PDFs collected: {len(results)}")
 
     with open(OUTPUT_LINKS_FILE, "w", encoding="utf-8") as f:
-        for pdf in all_pdfs:
+        for pdf in results:
             f.write(json.dumps(pdf, ensure_ascii=False) + "\n")
 
     print(f"[DONE] Saved all links to {OUTPUT_LINKS_FILE}")
@@ -65,3 +74,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
