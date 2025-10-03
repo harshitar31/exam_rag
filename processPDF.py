@@ -15,7 +15,6 @@ PROGRESS_FILE = "progress.txt"
 
 os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
-# LLaMA LLM
 llm = ChatOllama(model="gpt-oss:120b-cloud", temperature=0)
 session = requests.Session()
 
@@ -30,25 +29,17 @@ def save_progress(idx):
 # ================= PDF EXTRACTION =================
 def extract_pdf_text(resp_bytes, pdf_name):
     pdf_data = []
-
     with pdfplumber.open(io.BytesIO(resp_bytes)) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
             page_dict = {"page": page_number, "text": "", "tables": []}
-
-            # Text extraction
             text = page.extract_text()
             page_dict["text"] = text if text else ""
-
-            # Tables
             for table in page.extract_tables():
                 page_dict["tables"].append(table)
-
             pdf_data.append(page_dict)
-
     archive_path = os.path.join(ARCHIVE_DIR, f"{pdf_name}.json")
     with open(archive_path, "w", encoding="utf-8") as f:
         json.dump(pdf_data, f, indent=2, ensure_ascii=False)
-
     return pdf_data, archive_path
 
 # ================= JSON SAFETY =================
@@ -87,95 +78,110 @@ def main():
     start_idx = get_progress()
     print(f"Resuming from PDF #{start_idx}/{len(all_pdfs)}")
 
-    with open(OUTPUT_FILE, "a", encoding="utf-8") as f_out:
-        for idx, pdf in enumerate(all_pdfs[start_idx:], start=start_idx):
-            if pdf.get("processed", False):
-                print(f"Skipping already processed: {pdf['pdf_url']}")
+    for idx, pdf in enumerate(all_pdfs[start_idx:], start=start_idx):
+        if pdf.get("processed", False):
+            print(f"Skipping already processed: {pdf['pdf_url']}")
+            save_progress(idx + 1)
+            continue
+
+        try:
+            print(f"\nProcessing {idx+1}/{len(all_pdfs)}: {pdf['pdf_url']}")
+            resp = session.get(pdf["pdf_url"])
+            resp.raise_for_status()
+
+            pdf_name = f"doc_{idx+1}"
+            pdf_pages, archive_path = extract_pdf_text(resp.content, pdf_name)
+
+            # ---------- Extract course metadata from first page ----------
+            course_metadata = None
+            for page_json in pdf_pages:
+                if page_json.get("text", "").strip():
+                    prompt = """
+                    Extract the following metadata from this question paper text in JSON format:
+                    {
+                      "course_code": "...",
+                      "course_name": "...",
+                      "year": ...,
+                      "semester": ...
+                    }
+                    Year and semester should be integers.
+                    Only output JSON.
+                    """
+                    response = llm.invoke([HumanMessage(content=prompt + "\n\n" + page_json["text"])]).content
+                    course_metadata = safe_json_loads(response.strip())
+                    break
+
+            if not course_metadata:
+                print("[WARN] Could not extract course metadata. Skipping PDF.")
                 save_progress(idx + 1)
                 continue
 
-            try:
-                print(f"\nProcessing {idx+1}/{len(all_pdfs)}: {pdf['pdf_url']}")
-                resp = session.get(pdf["pdf_url"])
-                resp.raise_for_status()
-
-                pdf_name = f"doc_{idx+1}"
-                pdf_pages, archive_path = extract_pdf_text(resp.content, pdf_name)
-
-                # ---------- Extract course metadata from first page ----------
-                course_metadata = None
-                for page_json in pdf_pages:
-                    if page_json.get("text", "").strip():
-                        prompt = """
-                        Extract the following metadata from this question paper text in JSON format:
-                        {
-                          "course_code": "...",
-                          "course_name": "...",
-                          "year": ...,
-                          "semester": ...
-                        }
-                        Only output JSON.
-                        """
-                        response = llm.invoke([HumanMessage(content=prompt + "\n\n" + page_json["text"])]).content
-                        course_metadata = safe_json_loads(response.strip())
-                        break
-
-                if not course_metadata:
-                    print("[WARN] Could not extract course metadata. Skipping PDF.")
-                    save_progress(idx + 1)
+            # ---------- Extract questions page by page ----------
+            all_questions = []
+            for page_json in pdf_pages:
+                page_text = page_json.get("text", "").strip()
+                if not page_text:
                     continue
 
-                # ---------- Extract questions for the entire PDF ----------
-                full_text = "\n".join([p["text"] for p in pdf_pages if p.get("text")])
-                prompt_questions = """
-                You are given a question paper text.
+                prompt_questions = f"""
+                You are given a question paper text from a single page.
                 Split it into individual questions and extract metadata for each question
                 in JSON format:
-                {
+                {{
                   "questions": [
-                    {
+                    {{
                       "question_text": "...",
                       "marks": ...
-                    }
+                    }}
                   ]
-                }
+                }}
 
                 Rules:
                 - Do NOT output headings as separate objects.
                 - Attach headings to each sub-question if needed.
-                - Do NOT include any field called "images" in the output.
                 - "marks" must be integer if present, otherwise null.
                 - "question_text" must be a clean string. If incomplete/unclear, skip question.
+                - Do NOT include question numbers, part labels and marks in "question_text".
                 - Output ONLY a JSON object with a "questions" array, no explanations.
                 """
-                response = llm.invoke([HumanMessage(content=prompt_questions + "\n\n" + full_text)]).content
-                parsed = safe_json_loads(response.strip())
-                all_questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
 
-                # ---------- Combine into hierarchical JSON ----------
-                output_doc = {
-                    "course_code": course_metadata.get("course_code"),
-                    "course_name": course_metadata.get("course_name"),
-                    "year": int(course_metadata.get("year")) if course_metadata.get("year") else None,
-                    "semester": course_metadata.get("semester"),
-                    "file_link": pdf["pdf_url"],
-                    "item_title": pdf.get("item_title", ""),
-                    "questions": all_questions
-                }
+                try:
+                    response = llm.invoke([HumanMessage(content=prompt_questions + "\n\n" + page_text)]).content
+                    parsed = safe_json_loads(response.strip())
+                    page_questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
+                    all_questions.extend(page_questions)
+                except Exception as e:
+                    print(f"[WARN] Failed to extract questions from page {page_json['page']}: {e}")
+                    continue
 
+            # ---------- Combine into hierarchical JSON ----------
+            output_doc = {
+                "course_code": course_metadata.get("course_code"),
+                "course_name": course_metadata.get("course_name"),
+                "year": int(course_metadata.get("year")) if course_metadata.get("year") else None,
+                "semester": course_metadata.get("semester"),
+                "file_link": pdf["pdf_url"],
+                "item_title": pdf.get("item_title", ""),
+                "questions": all_questions
+            }
+
+            # ----------- WRITE OUTPUT IMMEDIATELY -----------
+            with open(OUTPUT_FILE, "a", encoding="utf-8") as f_out:
                 f_out.write(json.dumps(output_doc, ensure_ascii=False) + "\n")
-                print(f"[INFO] Wrote {len(all_questions)} questions from PDF {idx+1}")
 
-                # Mark processed
-                mark_as_processed(LINKS_FILE, pdf["pdf_url"])
-                save_progress(idx + 1)
+            print(f"[INFO] Wrote {len(all_questions)} questions from PDF {idx+1}")
 
-                os.remove(archive_path)
+            # Mark processed + save progress immediately
+            mark_as_processed(LINKS_FILE, pdf["pdf_url"])
+            save_progress(idx + 1)
 
-            except Exception as e:
-                print(f"[ERROR]: {e}")
-                print("Will retry this PDF next run.")
-                break
+            # Cleanup
+            os.remove(archive_path)
+
+        except Exception as e:
+            print(f"[ERROR]: {e}")
+            print("Will retry this PDF next run.")
+            break
 
     print(f"\n[SAVED]: Progress saved at {get_progress()}/{len(all_pdfs)}")
     print(f"[APPENDED]: Data appended to {OUTPUT_FILE}")
