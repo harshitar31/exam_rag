@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Question Search</title>
+<style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f4f4f9; color: #2c2c2c; margin:0; }
+    header { background-color: #7b1113; color: white; padding: 25px; text-align: center; }
+    main { max-width: 900px; margin: 40px auto; padding: 0 20px; position: relative; }
+    form { display: flex; justify-content: center; gap: 10px; margin-bottom: 30px; }
+    input[type="text"] { padding: 12px; border-radius: 10px; border: 1px solid #ccc; width: 60%; }
+    button { padding: 12px 20px; border: none; background: #4a0d0e; color: white; cursor: pointer; border-radius: 10px; transition: 0.2s; }
+    button:hover { background: #2c0607; }
+    .results .card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 18px; border-left: 5px solid #7b1113; box-shadow: 0 3px 10px rgba(0,0,0,0.08); }
+    .card a { display: inline-block; margin-top: 8px; color: #7b1113; text-decoration: none; }
+    .card a:hover { text-decoration: underline; }
+    #loadMoreWrapper { text-align: center; margin-top: 20px; }
+
+    #generatePaperBtn {
+        position: fixed;
+        bottom: 25px;
+        left: 25px;
+        background-color: #7b1113;
+        color: white;
+        border: none;
+        border-radius: 50px;
+        padding: 14px 22px;
+        cursor: pointer;
+        box-shadow: 0 3px 8px rgba(0,0,0,0.2);
+        transition: 0.3s;
+    }
+    #generatePaperBtn:hover { background-color: #4a0d0e; }
+</style>
+</head>
+<body>
+<header>
+    <h1>Search Questions</h1>
+</header>
+
+<main>
+    <form id="searchForm">
+        <input type="text" id="query" placeholder="Type course name/topics..." required>
+        <button type="submit">Search</button>
+    </form>
+
+    <div class="results" id="results"></div>
+    <div id="loadMoreWrapper" style="display:none;">
+        <button id="loadMore">Load More</button>
+    </div>
+
+    <button id="generatePaperBtn">📝 Generate Paper</button>
+</main>
+
+<script>
+let offset = 0;
+let currentQuery = "";
+const TOP_K = 20;
+
+document.getElementById("searchForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    currentQuery = document.getElementById("query").value.trim();
+    offset = 0;
+    if (!currentQuery) return;
+
+    const res = await fetch("/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: currentQuery, offset: offset })
+    });
+    const data = await res.json();
+
+    document.getElementById("results").innerHTML = renderResults(data.results);
+    offset += data.results.length;
+
+    document.getElementById("loadMoreWrapper").style.display = data.results.length === TOP_K ? "block" : "none";
+});
+
+// Load more results
+document.getElementById("loadMore").addEventListener("click", async () => {
+    const res = await fetch("/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: currentQuery, offset: offset })
+    });
+    const data = await res.json();
+
+    document.getElementById("results").innerHTML += renderResults(data.results);
+    offset += data.results.length;
+
+    if (data.results.length < TOP_K) {
+        document.getElementById("loadMoreWrapper").style.display = "none";
+    }
+});
+
+// Generate paper and open in new tab
+document.getElementById("generatePaperBtn").addEventListener("click", async () => {
+    const subject = document.getElementById("query").value.trim();
+    if (!subject) {
+        alert("Please enter a subject first!");
+        return;
+    }
+
+    const res = await fetch("/generate_paper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject: subject })
+    });
+    const data = await res.json();
+
+    if (data.paper_id) {
+        // Open the paper in a new tab
+        window.open(`/paper/${data.paper_id}`, '_blank');
+    } else {
+        alert("No questions could be generated for this subject.");
+    }
+});
+
+function renderResults(results) {
+    return results.map(r => `
+        <div class="card">
+            <b>${r.course_code} - ${r.course_name}</b>
+            ${r.year ? ` (${r.year}${r.semester ? ', ' + r.semester : ''})` : ''}
+            <p>${r.question_text}</p>
+            <a href="${r.file_link}" target="_blank">📄 View PDF</a><br>
+            <small>Marks: ${r.marks} | Similarity Score: ${r.score.toFixed(2)}</small>
+        </div>
+    `).join("");
+}
+</script>
+</body>
+</html>
