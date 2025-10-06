@@ -23,7 +23,7 @@ if COLLECTION_NAME not in existing_collections:
         vectors_config={"size": 768, "distance": "Cosine"}
     )
 
-    # Restore latest snapshot
+    # Restore latest snapshot if available
     if os.path.exists(SNAPSHOT_DIR) and os.listdir(SNAPSHOT_DIR):
         latest_snapshot = sorted(os.listdir(SNAPSHOT_DIR))[-1]
         client.snapshot.restore(
@@ -45,7 +45,7 @@ def search(query, offset=0):
     hits = client.search(
         collection_name=COLLECTION_NAME,
         query_vector=q_emb[0],
-        limit=TOP_K + offset  # fetch extra for pagination
+        limit=TOP_K + offset
     )
 
     # Filter by threshold and paginate
@@ -55,13 +55,20 @@ def search(query, offset=0):
     results = []
     for hit in paginated:
         payload = hit.payload
-        payload["score"] = hit.score
-        # Only include year/semester if present
+        payload["score"] = round(hit.score, 3)
+
+        # Show difficulty tag (default to Unknown if missing)
+        difficulty = payload.get("difficulty", "Unknown")
+        payload["difficulty_tag"] = difficulty.capitalize()
+
+        # Clean optional fields
         if not payload.get("year"):
             payload.pop("year", None)
         if not payload.get("semester"):
             payload.pop("semester", None)
+
         results.append(payload)
+
     return results
 
 # ================= FLASK ROUTES =================
@@ -75,7 +82,7 @@ def search_route():
 
 @app.route("/")
 def index():
-    return render_template("index.html")  # HTML in templates/index.html
+    return render_template("index.html")  # frontend template
 
 # ================= RUN =================
 if __name__ == "__main__":
