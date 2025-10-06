@@ -11,10 +11,35 @@
     input[type="text"] { padding: 12px; border-radius: 10px; border: 1px solid #ccc; width: 60%; }
     button { padding: 12px 20px; border: none; background: #4a0d0e; color: white; cursor: pointer; border-radius: 10px; transition: 0.2s; }
     button:hover { background: #2c0607; }
-    .results .card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 18px; border-left: 5px solid #7b1113; box-shadow: 0 3px 10px rgba(0,0,0,0.08); }
+
+    .results .card { 
+        background: white; 
+        padding: 20px; 
+        border-radius: 12px; 
+        margin-bottom: 18px; 
+        border-left: 5px solid #7b1113; 
+        box-shadow: 0 3px 10px rgba(0,0,0,0.08); 
+    }
+
     .card a { display: inline-block; margin-top: 8px; color: #7b1113; text-decoration: none; }
     .card a:hover { text-decoration: underline; }
+
     #loadMoreWrapper { text-align: center; margin-top: 20px; }
+
+    /* ==== Difficulty badges ==== */
+    .difficulty-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 8px;
+        font-size: 0.85em;
+        font-weight: 600;
+        color: white;
+        margin-left: 8px;
+    }
+    .easy { background-color: #4caf50; }      /* Green */
+    .medium { background-color: #ff9800; }    /* Orange */
+    .difficult { background-color: #f44336; } /* Red */
+    .unknown { background-color: #9e9e9e; }   /* Gray */
 </style>
 </head>
 <body>
@@ -75,15 +100,19 @@ document.getElementById("loadMore").addEventListener("click", async () => {
 });
 
 function renderResults(results) {
-    return results.map(r => `
+    return results.map(r => {
+        const diff = (r.difficulty || "unknown").toLowerCase();
+        return `
         <div class="card">
             <b>${r.course_code} - ${r.course_name}</b>
             ${r.year ? ` (${r.year}${r.semester ? ', ' + r.semester : ''})` : ''}
+            <span class="difficulty-badge ${diff}">${r.difficulty_tag || diff.charAt(0).toUpperCase() + diff.slice(1)}</span>
             <p>${r.question_text}</p>
             <a href="${r.file_link}" target="_blank">📄 View PDF</a><br>
-            <small>Marks: ${r.marks} | Similarity Score: ${r.score.toFixed(2)}</small>
+            <small>Marks: ${r.marks || '-'} | Similarity Score: ${r.score.toFixed(2)}</small>
         </div>
-    `).join("");
+        `;
+    }).join("");
 }
 </script>
 </body>
