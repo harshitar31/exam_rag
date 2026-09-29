@@ -1,70 +1,105 @@
-from sentence_transformers import SentenceTransformer, util
+"""
+Rule-based difficulty tagging (easy / medium / difficult).
+
+The previous version compared each question's embedding to three one-line
+descriptions of "easy", "medium" and "difficult". Those similarities were all
+~0.5, so the labels were close to random (62% came out "difficult").
+
+This version combines two signals that actually correlate with difficulty in
+exam papers:
+  1. marks            -- 1-2 marks is recall, 8+ marks is long-form
+  2. the task verb    -- Bloom's taxonomy: define/list < explain/solve < derive/design
+Each available signal gives a level 0/1/2; the average is rounded.
+"""
+
 import json
-from tqdm import tqdm
+import re
+from collections import Counter
 
-# ===== Model =====
-print("[INFO] Loading model BAAI/bge-base-en-v1.5 ...")
-model = SentenceTransformer("BAAI/bge-base-en-v1.5")
+INPUT_FILE = "dspace_questions_clean.jsonl"     # output of cleaning.py
+OUTPUT_FILE = "dspace_questions_tagged.jsonl"   # input of databaseCreate.py
 
-# ===== Reference difficulty embeddings =====
-difficulty_descriptions = {
-    "easy": "This is a simple and direct question that tests recall or basic understanding.",
-    "medium": "This question needs reasoning, moderate problem solving, or code tracing.",
-    "difficult": "This question involves analysis, multi-step reasoning, or synthesis of knowledge."
+LEVELS = ["easy", "medium", "difficult"]
+
+# Bloom's taxonomy verbs, grouped into our three levels
+VERB_LEVELS = {
+    0: [
+        "define", "what is", "what are", "what do you mean", "what is meant", "list", "state",
+        "name", "mention", "expand", "recall", "identify", "give the", "give any", "fill in",
+        "match the", "choose", "select", "true or false", "who ", "when ", "which ", "write the full form",
+        "what does", "enumerate", "label",
+    ],
+    1: [
+        "explain", "describe", "discuss", "compare", "distinguish", "differentiate", "illustrate",
+        "calculate", "compute", "find", "determine", "solve", "draw", "sketch", "classify",
+        "write a program", "write a c", "write a short note", "write short note", "how ",
+        "why ", "predict", "convert", "obtain", "plot", "show that", "estimate", "summarize",
+        "outline", "brief", "interpret", "apply", "use ",
+    ],
+    2: [
+        "derive", "prove", "design", "analyse", "analyze", "evaluate", "develop", "construct",
+        "justify", "optimize", "optimise", "formulate", "critically", "propose", "assess",
+        "examine", "investigate", "deduce", "synthesize", "synthesise", "validate",
+    ],
 }
 
-difficulty_embs = {
-    k: model.encode(v, normalize_embeddings=True) for k, v in difficulty_descriptions.items()
-}
 
-# ===== Input / Output =====
-INPUT_FILE = "dspace_questions_metadata.jsonl"
-OUTPUT_FILE = "dspace_difficulty_bge.jsonl"
+def verb_level(text):
+    """Level of the hardest task verb in the question, or None."""
+    lowered = " " + text.lower()
+    found = None
+    for level, verbs in VERB_LEVELS.items():
+        for verb in verbs:
+            # whole words only, so "constructor" doesn't count as "construct"
+            if re.search(r"[\s(\"'‘“]" + re.escape(verb.strip()) + r"\b", lowered):
+                found = level if found is None else max(found, level)
+                break
+    return found
 
-# ===== Process =====
-valid_count = 0
-skip_count = 0
-line_count = 0
 
-with open(INPUT_FILE, "r", encoding="utf-8") as fin, open(OUTPUT_FILE, "w", encoding="utf-8") as fout:
-    for line in tqdm(fin, desc="Classifying with BGE"):
-        line_count += 1
-        line = line.strip()
-        if not line:
-            skip_count += 1
-            continue  # skip empty lines
+def marks_level(marks):
+    if not isinstance(marks, (int, float)) or marks <= 0:
+        return None
+    if marks <= 2:
+        return 0
+    if marks <= 7:
+        return 1
+    return 2
 
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError as e:
-            print(f"[WARN] Skipping malformed JSON on line {line_count}: {e}")
-            skip_count += 1
-            continue
 
-        # Process questions only if they exist
-        questions = data.get("questions", [])
-        if not questions:
-            continue
+def tag_difficulty(question_text, marks):
+    signals = [s for s in (marks_level(marks), verb_level(question_text)) if s is not None]
+    if not signals:
+        # Fall back to length: long, multi-part questions tend to be harder
+        return LEVELS[0 if len(question_text) < 80 else 1 if len(question_text) < 300 else 2]
+    level = sum(signals) / len(signals)
+    # Very long questions (multi-step problems) get nudged up
+    if len(question_text) > 350:
+        level += 0.5
+    return LEVELS[min(2, int(level + 0.5))]
 
-        for q in questions:
-            q_text = q.get("question_text", "").strip()
-            if not q_text:
+
+def main():
+    counts = Counter()
+    papers = 0
+    with open(INPUT_FILE, encoding="utf-8") as fin, open(OUTPUT_FILE, "w", encoding="utf-8") as fout:
+        for line in fin:
+            line = line.strip()
+            if not line:
                 continue
+            data = json.loads(line)
+            for q in data.get("questions", []):
+                q.pop("confidence", None)
+                q["difficulty"] = tag_difficulty(q["question_text"], q.get("marks"))
+                counts[q["difficulty"]] += 1
+            fout.write(json.dumps(data, ensure_ascii=False) + "\n")
+            papers += 1
 
-            # Encode question
-            q_emb = model.encode(q_text, normalize_embeddings=True)
+    total = sum(counts.values())
+    print(f"✅ Tagged {total} questions from {papers} papers -> {OUTPUT_FILE}")
+    for level in LEVELS:
+        print(f"   {level:<10} {counts[level]:>6}  ({counts[level] / total:.0%})")
 
-            # Compute cosine similarity with each difficulty level
-            scores = {lvl: util.cos_sim(q_emb, emb).item() for lvl, emb in difficulty_embs.items()}
-            best_level = max(scores, key=scores.get)
 
-            # Assign results
-            q["difficulty"] = best_level
-            q["confidence"] = round(scores[best_level], 3)
-
-        # Write back to output file
-        fout.write(json.dumps(data, ensure_ascii=False) + "\n")
-        valid_count += 1
-
-print(f"\n✅ Done! Saved difficulty predictions to {OUTPUT_FILE}")
-print(f"[STATS] Processed {valid_count} valid records, skipped {skip_count} malformed/empty lines.")
+if __name__ == "__main__":
+    main()

@@ -2,27 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Question Search</title>
 <style>
     body { font-family: 'Segoe UI', sans-serif; background: #f4f4f9; color: #2c2c2c; margin:0; }
     header { background-color: #7b1113; color: white; padding: 25px; text-align: center; }
     main { max-width: 900px; margin: 40px auto; padding: 0 20px; }
-    form { display: flex; justify-content: center; gap: 10px; margin-bottom: 30px; }
-    input[type="text"] { padding: 12px; border-radius: 10px; border: 1px solid #ccc; width: 60%; }
+    form { margin-bottom: 30px; }
+    .search-row { display: flex; justify-content: center; gap: 10px; }
+    input[type="text"] { padding: 12px; border-radius: 10px; border: 1px solid #ccc; flex: 1; max-width: 600px; }
     button { padding: 12px 20px; border: none; background: #4a0d0e; color: white; cursor: pointer; border-radius: 10px; transition: 0.2s; }
     button:hover { background: #2c0607; }
 
-    .results .card { 
-        background: white; 
-        padding: 20px; 
-        border-radius: 12px; 
-        margin-bottom: 18px; 
-        border-left: 5px solid #7b1113; 
-        box-shadow: 0 3px 10px rgba(0,0,0,0.08); 
-    }
+    .filters { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 14px; }
+    .filters select, .filters input { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; background: white; font: inherit; font-size: 0.9em; }
+    .filters input[type="number"] { width: 90px; }
+    .filters #course { width: 260px; }
+    .filters .clear { background: none; color: #7b1113; padding: 8px 6px; }
 
-    .card a { display: inline-block; margin-top: 8px; color: #7b1113; text-decoration: none; }
+    .status { text-align: center; color: #666; margin-bottom: 16px; }
+
+    .results .card {
+        background: white;
+        padding: 20px;
+        border-radius: 12px;
+        margin-bottom: 18px;
+        border-left: 5px solid #7b1113;
+        box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+    }
+    .card p { white-space: pre-line; }
+
+    .card a { display: inline-block; margin-top: 8px; margin-right: 12px; color: #7b1113; text-decoration: none; }
     .card a:hover { text-decoration: underline; }
+    .asked { display: inline-block; margin-left: 8px; padding: 3px 9px; border-radius: 8px; background: #f3e5e5; color: #7b1113; font-size: 0.85em; font-weight: 600; }
 
     #loadMoreWrapper { text-align: center; margin-top: 20px; }
 
@@ -49,10 +61,28 @@
 
 <main>
     <form id="searchForm">
-        <input type="text" id="query" placeholder="Type course name/topics..." required>
-        <button type="submit">Search</button>
+        <div class="search-row">
+            <input type="text" id="query" placeholder="Type course name/topics..." required>
+            <button type="submit">Search</button>
+        </div>
+        <div class="filters">
+            <input id="course" list="courseList" placeholder="Any course">
+            <datalist id="courseList"></datalist>
+            <select id="year"><option value="">Any year</option></select>
+            <select id="semester"><option value="">Any semester</option></select>
+            <select id="difficulty">
+                <option value="">Any difficulty</option>
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="difficult">Difficult</option>
+            </select>
+            <input type="number" id="minMarks" min="0" placeholder="Min marks">
+            <input type="number" id="maxMarks" min="0" placeholder="Max marks">
+            <button type="button" class="clear" id="clearFilters">Clear</button>
+        </div>
     </form>
 
+    <div class="status" id="status"></div>
     <div class="results" id="results"></div>
     <div id="loadMoreWrapper" style="display:none;">
         <button id="loadMore">Load More</button>
@@ -62,58 +92,111 @@
 <script>
 let offset = 0;
 let currentQuery = "";
-const TOP_K = 20;
+let currentFilters = {};
+const courseByLabel = {};
 
-document.getElementById("searchForm").addEventListener("submit", async (e) => {
+function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    })[c]);
+}
+
+function safeUrl(url) {
+    return /^https?:\/\//i.test(url || "") ? url : "#";
+}
+
+async function loadFacets() {
+    const facets = await (await fetch("/facets")).json();
+    const courseList = document.getElementById("courseList");
+    for (const c of facets.courses) {
+        const label = c.name ? `${c.code} - ${c.name}` : c.code;
+        courseByLabel[label] = c.code;
+        courseByLabel[c.code] = c.code;
+        const opt = document.createElement("option");
+        opt.value = label;
+        courseList.appendChild(opt);
+    }
+    for (const y of facets.years) document.getElementById("year").add(new Option(y, y));
+    for (const s of facets.semesters) document.getElementById("semester").add(new Option(`Semester ${s}`, s));
+}
+
+function readFilters() {
+    const courseInput = document.getElementById("course").value.trim();
+    return {
+        course_code: courseByLabel[courseInput] || courseInput.split(" - ")[0] || "",
+        year: document.getElementById("year").value,
+        semester: document.getElementById("semester").value,
+        difficulty: document.getElementById("difficulty").value,
+        min_marks: document.getElementById("minMarks").value,
+        max_marks: document.getElementById("maxMarks").value,
+    };
+}
+
+async function runSearch(append) {
+    const res = await fetch("/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: currentQuery, offset: offset, filters: currentFilters })
+    });
+    const data = await res.json();
+    const results = data.results || [];
+
+    const container = document.getElementById("results");
+    if (append) container.insertAdjacentHTML("beforeend", renderResults(results));
+    else container.innerHTML = renderResults(results);
+    offset += results.length;
+
+    document.getElementById("status").textContent =
+        offset === 0 ? (data.error || "No matching questions. Try other words or fewer filters.") : "";
+    document.getElementById("loadMoreWrapper").style.display = data.has_more ? "block" : "none";
+}
+
+document.getElementById("searchForm").addEventListener("submit", (e) => {
     e.preventDefault();
     currentQuery = document.getElementById("query").value.trim();
-    offset = 0;
     if (!currentQuery) return;
-
-    const res = await fetch("/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: currentQuery, offset: offset })
-    });
-    const data = await res.json();
-
-    document.getElementById("results").innerHTML = renderResults(data.results);
-    offset += data.results.length;
-
-    document.getElementById("loadMoreWrapper").style.display = data.results.length === TOP_K ? "block" : "none";
+    currentFilters = readFilters();
+    offset = 0;
+    runSearch(false);
 });
 
-document.getElementById("loadMore").addEventListener("click", async () => {
-    const res = await fetch("/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: currentQuery, offset: offset })
-    });
-    const data = await res.json();
+// Re-run the search as soon as a filter changes
+document.querySelectorAll(".filters select, .filters input").forEach(el =>
+    el.addEventListener("change", () => {
+        if (currentQuery) document.getElementById("searchForm").requestSubmit();
+    })
+);
 
-    document.getElementById("results").innerHTML += renderResults(data.results);
-    offset += data.results.length;
-
-    if (data.results.length < TOP_K) {
-        document.getElementById("loadMoreWrapper").style.display = "none";
-    }
+document.getElementById("clearFilters").addEventListener("click", () => {
+    document.querySelectorAll(".filters select, .filters input").forEach(el => el.value = "");
+    if (currentQuery) document.getElementById("searchForm").requestSubmit();
 });
+
+document.getElementById("loadMore").addEventListener("click", () => runSearch(true));
 
 function renderResults(results) {
     return results.map(r => {
-        const diff = (r.difficulty || "unknown").toLowerCase();
+        const diff = escapeHtml((r.difficulty || "unknown").toLowerCase());
+        const occurrences = r.occurrences || [{ year: r.year, file_link: r.file_link }];
+        const years = [...new Set(occurrences.map(o => o.year).filter(Boolean))];
+        const links = occurrences.map((o, i) =>
+            `<a href="${escapeHtml(safeUrl(o.file_link))}" target="_blank" rel="noopener">📄 ${o.year ? escapeHtml(o.year) + " paper" : "View PDF" + (occurrences.length > 1 ? " " + (i + 1) : "")}</a>`
+        ).join("");
         return `
         <div class="card">
-            <b>${r.course_code} - ${r.course_name}</b>
-            ${r.year ? ` (${r.year}${r.semester ? ', ' + r.semester : ''})` : ''}
-            <span class="difficulty-badge ${diff}">${r.difficulty_tag || diff.charAt(0).toUpperCase() + diff.slice(1)}</span>
-            <p>${r.question_text}</p>
-            <a href="${r.file_link}" target="_blank">📄 View PDF</a><br>
-            <small>Marks: ${r.marks || '-'} | Similarity Score: ${r.score.toFixed(2)}</small>
+            <b>${escapeHtml(r.course_code)} - ${escapeHtml(r.course_name)}</b>
+            ${r.semester ? ` (Semester ${escapeHtml(r.semester)})` : ''}
+            <span class="difficulty-badge ${diff}">${escapeHtml(r.difficulty_tag || diff)}</span>
+            ${occurrences.length > 1 ? `<span class="asked">Asked ${occurrences.length}× ${years.length ? "(" + years.map(escapeHtml).join(", ") + ")" : ""}</span>` : ''}
+            <p>${escapeHtml(r.question_text)}</p>
+            ${links}<br>
+            <small>Marks: ${escapeHtml(r.marks || '-')} | Similarity Score: ${Number(r.score).toFixed(2)}</small>
         </div>
         `;
     }).join("");
 }
+
+loadFacets();
 </script>
 </body>
 </html>

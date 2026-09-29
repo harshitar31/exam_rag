@@ -1,5 +1,18 @@
+# search app
 Flask
-qdrant-client
+qdrant-client>=1.10
 sentence-transformers
 torch
 numpy
+requests
+
+# PDF processing / extraction pipeline
+pdfplumber
+langchain
+langchain-ollama
+tqdm
+
+# fine-tuning + evaluation
+transformers
+accelerate
+mlx-lm; sys_platform == "darwin" and platform_machine == "arm64"

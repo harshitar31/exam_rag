@@ -1,36 +1,50 @@
+import argparse
+import hashlib
 import json
 import os
-import hashlib
+import uuid
 from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import PointStruct
+from qdrant_client.http.models import Distance, PayloadSchemaType, PointStruct, VectorParams
+
+from common import COLLECTION_NAME, EMBEDDING_MODEL, VECTOR_SIZE, embedding_text, get_client
 
 # ================= CONFIG =================
-JSONL_FILE = "dspace_difficulty_bge.jsonl"  # Input data file
+JSONL_FILE = "dspace_questions_tagged.jsonl"    # Output of cleaning.py -> difficultyTagging.py
 LAST_COUNT_FILE = "last_count.txt"              # Track processed count
-EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"       # Semantic model
-COLLECTION_NAME = "questions"                   # Qdrant collection name
+
+parser = argparse.ArgumentParser(description="Embed questions and upsert them into Qdrant.")
+parser.add_argument("--rebuild", action="store_true",
+                    help="Drop the collection and re-index everything (needed after re-cleaning the data).")
+args = parser.parse_args()
 
 # ================= QDRANT SETUP =================
-client = QdrantClient(host="localhost", port=6333)
+client = get_client()
 
-# Check if collection exists, else create it
-existing_collections = [c.name for c in client.get_collections().collections]
-if COLLECTION_NAME not in existing_collections:
-    client.recreate_collection(
+if args.rebuild and client.collection_exists(COLLECTION_NAME):
+    client.delete_collection(COLLECTION_NAME)
+    print(f"[REBUILD] Dropped collection '{COLLECTION_NAME}'")
+
+if not client.collection_exists(COLLECTION_NAME):
+    client.create_collection(
         collection_name=COLLECTION_NAME,
-        vectors_config={"size": 768, "distance": "Cosine"}  # 768D for BAAI base
+        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE)
     )
+    # Indexes for the filters used by the search UI
+    for field, schema in [("course_code", PayloadSchemaType.KEYWORD),
+                          ("difficulty", PayloadSchemaType.KEYWORD),
+                          ("year", PayloadSchemaType.INTEGER),
+                          ("semester", PayloadSchemaType.INTEGER),
+                          ("marks", PayloadSchemaType.INTEGER)]:
+        client.create_payload_index(COLLECTION_NAME, field_name=field, field_schema=schema)
     print(f"[INIT] Created Qdrant collection '{COLLECTION_NAME}'")
 else:
     print(f"[INFO] Using existing Qdrant collection '{COLLECTION_NAME}'")
 
 # ================= PROGRESS TRACKING =================
-if os.path.exists(LAST_COUNT_FILE):
+last_count = 0
+if not args.rebuild and os.path.exists(LAST_COUNT_FILE):
     with open(LAST_COUNT_FILE, "r") as f:
         last_count = int(f.read().strip() or 0)
-else:
-    last_count = 0
 
 # ================= LOAD JSONL DATA =================
 with open(JSONL_FILE, "r", encoding="utf-8") as f:
@@ -55,44 +69,35 @@ for idx, line in enumerate(new_lines, start=1):
             f.write(str(last_count))
         continue
 
-    course_code = obj.get("course_code", "")
-    course_name = obj.get("course_name", "")
-    semester = obj.get("semester", "")
-    year = obj.get("year")
+    course_code = obj.get("course_code") or ""
+    course_name = obj.get("course_name") or ""
     file_link = obj.get("file_link", "")
 
-    points = []
-    for q in obj.get("questions", []):
-        question_text = q.get("question_text", "").strip()
-        marks = q.get("marks", None)
-        difficulty = q.get("difficulty", None)  # <-- Added field
+    questions = [q for q in obj.get("questions", []) if q.get("question_text", "").strip()]
+    if questions:
+        # Embed the whole paper in one batch; year/semester are left out of the
+        # text because they are handled by filters, and digits only add noise.
+        texts = [embedding_text(course_name, q["question_text"].strip()) for q in questions]
+        embeddings = model.encode(texts, normalize_embeddings=True, batch_size=64)
 
-        if not question_text:
-            continue
+        points = []
+        for q, emb in zip(questions, embeddings):
+            question_text = q["question_text"].strip()
+            # Deterministic ID per (paper, question): the same question asked in
+            # different years is kept, so the UI can show "asked in 2016, 2018".
+            qid = str(uuid.UUID(hashlib.md5(f"{file_link}{question_text}".encode()).hexdigest()))
+            payload = {
+                "course_code": course_code,
+                "course_name": course_name,
+                "semester": obj.get("semester"),
+                "year": obj.get("year"),
+                "marks": q.get("marks"),
+                "difficulty": q.get("difficulty"),
+                "question_text": question_text,
+                "file_link": file_link
+            }
+            points.append(PointStruct(id=qid, vector=emb.tolist(), payload=payload))
 
-        # Generate unique deterministic ID
-        qid = hashlib.md5(f"{course_code}{course_name}{question_text}".encode()).hexdigest()
-
-        # Create text for embedding (no metadata included)
-        text_for_embedding = f"{course_name} {semester} {year or ''} {question_text}"
-        emb = model.encode(text_for_embedding, normalize_embeddings=True).tolist()
-
-        # Build payload (metadata)
-        payload = {
-            "course_code": course_code,
-            "course_name": course_name,
-            "semester": semester,
-            "year": year,
-            "marks": marks,
-            "difficulty": difficulty,        # <-- Stored in payload only
-            "question_text": question_text,
-            "file_link": file_link
-        }
-
-        points.append(PointStruct(id=qid, vector=emb, payload=payload))
-
-    # Upsert all question points from this object
-    if points:
         client.upsert(collection_name=COLLECTION_NAME, points=points)
 
     # Update progress file
@@ -100,7 +105,7 @@ for idx, line in enumerate(new_lines, start=1):
     with open(LAST_COUNT_FILE, "w") as f:
         f.write(str(last_count))
 
-    if idx % 5 == 0:
+    if idx % 25 == 0:
         print(f"[INFO] Processed {idx}/{len(new_lines)} entries")
 
 print("\n[DONE] All new questions inserted into Qdrant with embeddings and difficulty levels.")

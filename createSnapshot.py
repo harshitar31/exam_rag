@@ -1,11 +1,11 @@
-from qdrant_client import QdrantClient
 import os
 import requests
 
-COLLECTION_NAME = "questions"
+from common import COLLECTION_NAME, QDRANT_URL, get_client
+
 SNAPSHOT_DIR = "snapshots"
 
-client = QdrantClient(host="localhost", port=6333)
+client = get_client()
 
 # Create snapshots folder if it doesn't exist
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
@@ -16,7 +16,7 @@ snapshot_name = snapshot_info.name
 print(f"[DONE] Snapshot created: {snapshot_name}")
 
 # Download snapshot using requests
-url = f"http://localhost:6333/collections/{COLLECTION_NAME}/snapshots/{snapshot_name}"
+url = f"{QDRANT_URL}/collections/{COLLECTION_NAME}/snapshots/{snapshot_name}"
 snapshot_path = os.path.join(SNAPSHOT_DIR, snapshot_name)
 
 response = requests.get(url, stream=True)

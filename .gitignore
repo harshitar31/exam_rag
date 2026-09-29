@@ -1,3 +1,25 @@
 tempCodeRunnerFile.py
-tempCodeRunnerFile.py
-./qdrant_storage
+__pycache__/
+.DS_Store
+
+# environments
+venv/
+.venv/
+
+# models, vector store and snapshots (large / machine specific)
+exam_rag_model/
+adapters/
+qdrant_storage/
+qdrant_local/
+snapshots/
+pdf_archives/
+
+# generated training data and scratch outputs
+data/
+data_v2/
+data_v3/
+sample_pdfs/*.pdf
+evaluation_output.jsonl
+metadata_finetuned.jsonl
+dspace_questions_clean.jsonl
+.claude/launch.json
