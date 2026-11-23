@@ -1,10 +1,47 @@
-version: '3.8'
+# Full stack:   docker compose up -d --build              (http://localhost:8080, or set HTTP_PORT)
+# More capacity before exams:
+#               docker compose up -d --scale app=3 && docker compose exec nginx nginx -s reload
+# Development (Qdrant only):   docker compose up -d qdrant
 services:
   qdrant:
-    image: qdrant/qdrant:latest
-    container_name: qdrant
+    image: qdrant/qdrant:v1.15.5
     ports:
-      - "6333:6333"
+      - "6333:6333"          # for databaseCreate.py on the host; keep closed on a public server
     volumes:
-      - ./qdrant_storage:/qdrant/storage
+      - qdrant_data:/qdrant/storage
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    restart: unless-stopped
+
+  app:
+    build: .
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+      # Search is CPU-bound (embedding the query). Keep replicas x workers x
+      # threads at about the server's CPU core count; past that, more
+      # containers on the same machine make things slower, not faster.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
+      # PDF_BASE_URL: /dspace    # serve PDFs through nginx's cache (see deploy/nginx.conf)
+    depends_on:
+      - qdrant
+      - redis
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: ./deploy
+      dockerfile: Dockerfile.nginx
+    image: exam-rag-nginx
+    ports:
+      - "${HTTP_PORT:-8080}:80"     # HTTP_PORT=8088 docker compose up -d if 8080 is taken
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:

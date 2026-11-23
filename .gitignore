@@ -23,3 +23,7 @@ evaluation_output.jsonl
 metadata_finetuned.jsonl
 dspace_questions_clean.jsonl
 .claude/launch.json
+pdf_cache/
+search_eval_pool.json
+.pytest_cache/
+adapters/

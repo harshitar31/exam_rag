@@ -1,0 +1,9 @@
+# Search website only (what the Docker image installs). torch is installed
+# separately from the CPU-only index -- see Dockerfile.
+Flask
+gunicorn
+qdrant-client>=1.10
+sentence-transformers
+redis
+requests
+numpy

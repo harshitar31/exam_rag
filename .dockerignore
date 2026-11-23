@@ -1,0 +1,9 @@
+# The app image only needs app.py, common.py, gunicorn.conf.py,
+# papers_catalog.jsonl, templates/ and requirements-app.txt.
+*
+!app.py
+!common.py
+!gunicorn.conf.py
+!papers_catalog.jsonl
+!requirements-app.txt
+!templates/

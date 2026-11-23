@@ -19,6 +19,7 @@
 * **Semantic Search:** Allows for searching questions based on meaning and context, not just keywords, by leveraging vector embeddings from the database.
 * **Filters & de-duplication:** Narrow results by course, year, semester, difficulty and marks; a question asked in several years shows up once with "Asked 3× (2012, 2014, 2016)".
 * **Difficulty tags:** Rule-based easy / medium / difficult tags from marks and Bloom's-taxonomy task verbs.
+* **Find papers by course:** Every B.Tech paper on DSpace (8,580 papers, 1,692 courses, 2010–2025) listed by course code/name, exam and year — read from each paper's header, so new papers show up before their questions are extracted.
 
 ---
 
@@ -34,7 +35,6 @@
 ### **Web & PDF Processing** 
 
 -   **`requests`**: For downloading web pages and PDFs.
--   **`BeautifulSoup` (`bs4`)**: For parsing HTML and extracting PDF links.
 -   **`pdfplumber`**: For extracting text and tables from PDF files.
 -   **`io`**: For handling in-memory data streams.
 
@@ -49,25 +49,47 @@
 -   **`flask`**: For building a simple web application to demonstrate the search functionality.
 ---
 
-### **Running it**
+### **Running it (development)**
 
 ```bash
 pip install -r requirements.txt
-docker compose up -d                       # Qdrant on :6333
+docker compose up -d qdrant                # Qdrant on :6333
 
 python cleaning.py                         # dspace_questions_metadata.jsonl -> dspace_questions_clean.jsonl
 python difficultyTagging.py                # -> dspace_questions_tagged.jsonl
 python databaseCreate.py --rebuild         # embed + index into Qdrant
-python app.py                              # http://localhost:5000
+FLASK_DEBUG=1 python app.py                # http://localhost:5000
 ```
 
 No Docker? Prefix the last two commands with `QDRANT_PATH=qdrant_local` to run Qdrant embedded in-process. On macOS, port 5000 is often taken by AirPlay Receiver; use `PORT=5050 python app.py`.
+
+### **Deploying (production)**
+
+```bash
+docker compose up -d --build               # nginx :8080 -> app (gunicorn) -> Qdrant + Redis
+python databaseCreate.py --rebuild         # first time only: index into the Qdrant container
+# before exam season: more app replicas, then let nginx pick them up
+docker compose up -d --scale app=3 && docker compose exec nginx nginx -s reload
+```
+
+- **nginx** (`deploy/nginx.conf`) balances across app replicas (`least_conn`), rate-limits `/search` per IP (generously — campus Wi-Fi shares IPs), caches `/papers` and `/facets`, and can cache DSpace PDFs (`PDF_BASE_URL=/dspace`, agree this with the library first).
+- **app**: gunicorn, `WEB_CONCURRENCY` workers per container, `/healthz` for health checks, debug always off. Search results are cached in **Redis** for 6 h — the index only changes once a semester and exam-week queries repeat a lot.
+- Never run `python app.py` (Flask's development server) on a reachable network.
+
+### **Tests and evaluation**
+
+```bash
+python -m pytest                           # cleaning, sub-part splitting, header parsing, BM25
+python search_eval.py score                # search quality on 28 judged queries (search_eval_qrels.json)
+python evaluate.py                         # extraction model on hand-labelled sample_pdfs/
+```
 
 ### **Pipeline**
 
 | Step | Script | Output |
 |---|---|---|
-| Crawl DSpace for PDF links | `scrapeLinks.py` | `pdf_links.jsonl` |
+| Crawl DSpace for PDF links (all pages, keeps `processed` flags) | `scrapeLinks.py` | `pdf_links.jsonl` |
+| Course/exam/year of every paper from its header | `catalog.py` | `papers_catalog.jsonl`, `pdf_cache/` |
 | LLM question + metadata extraction | `processPDF.py` | `dspace_questions_metadata.jsonl` |
 | Normalise semester/year/course code, strip numbering | `cleaning.py` | `dspace_questions_clean.jsonl` |
 | Difficulty tagging | `difficultyTagging.py` | `dspace_questions_tagged.jsonl` |

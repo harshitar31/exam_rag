@@ -48,6 +48,19 @@
         color: white;
         margin-left: 8px;
     }
+    /* ==== Tabs ==== */
+    .tabs { display: flex; justify-content: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+    .tab { background: transparent; border: 1px solid rgba(255,255,255,0.5); color: white; padding: 8px 16px; }
+    .tab:hover { background: rgba(255,255,255,0.15); }
+    .tab.active { background: white; color: #7b1113; font-weight: 600; }
+
+    /* ==== Paper list ==== */
+    .paper-list { list-style: none; padding: 0; margin: 12px 0 0; }
+    .paper-list li { padding: 6px 0; border-top: 1px solid #eee; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+    .paper-list .year { font-weight: 600; min-width: 3.5em; }
+    .paper-list .exam { color: #555; flex: 1; }
+    .paper-list a { margin-top: 0; }
+
     .easy { background-color: #4caf50; }      /* Green */
     .medium { background-color: #ff9800; }    /* Orange */
     .difficult { background-color: #f44336; } /* Red */
@@ -56,10 +69,25 @@
 </head>
 <body>
 <header>
-    <h1>Search Questions</h1>
+    <h1>Past Papers</h1>
+    <nav class="tabs" role="tablist">
+        <button type="button" class="tab active" data-tab="questionsTab" role="tab">Search questions</button>
+        <button type="button" class="tab" data-tab="papersTab" role="tab">Find papers by course</button>
+    </nav>
 </header>
 
-<main>
+<main id="papersTab" hidden>
+    <form id="papersForm">
+        <div class="search-row">
+            <input type="text" id="paperQuery" placeholder="Course code or name, e.g. 19CSE435 or computer vision" required>
+            <button type="submit">Find</button>
+        </div>
+    </form>
+    <div class="status" id="papersStatus"></div>
+    <div class="results" id="papersResults"></div>
+</main>
+
+<main id="questionsTab">
     <form id="searchForm">
         <div class="search-row">
             <input type="text" id="query" placeholder="Type course name/topics..." required>
@@ -102,7 +130,8 @@ function escapeHtml(value) {
 }
 
 function safeUrl(url) {
-    return /^https?:\/\//i.test(url || "") ? url : "#";
+    // http(s) links, or same-site paths like /dspace/... (PDF cache); never javascript: etc.
+    return /^(https?:\/\/|\/(?!\/))/i.test(url || "") ? url : "#";
 }
 
 async function loadFacets() {
@@ -195,6 +224,42 @@ function renderResults(results) {
         `;
     }).join("");
 }
+
+// ==== Tabs ====
+document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tab));
+    document.querySelectorAll("main").forEach(m => m.hidden = m.id !== tab.dataset.tab);
+    try { localStorage.setItem("tab", tab.dataset.tab); } catch (e) {}
+}));
+try {
+    const saved = localStorage.getItem("tab");
+    if (saved) document.querySelector(`.tab[data-tab="${saved}"]`)?.click();
+} catch (e) {}
+
+// ==== Find papers by course ====
+document.getElementById("papersForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const q = document.getElementById("paperQuery").value.trim();
+    if (!q) return;
+    const status = document.getElementById("papersStatus");
+    status.textContent = "Searching…";
+    const data = await (await fetch("/papers?q=" + encodeURIComponent(q))).json();
+    const courses = data.courses || [];
+    status.textContent = courses.length ? "" : "No course matches. Try the course code (e.g. 19CSE435) or fewer words.";
+    document.getElementById("papersResults").innerHTML = courses.map(c => `
+        <div class="card">
+            <b>${escapeHtml(c.code)} - ${escapeHtml(c.name || "Unknown course name")}</b>
+            <span class="asked">${c.papers.length} paper${c.papers.length === 1 ? "" : "s"}</span>
+            <ul class="paper-list">
+                ${c.papers.map(p => `
+                <li>
+                    <span class="year">${escapeHtml(p.year || "—")}</span>
+                    <span class="exam">${escapeHtml(p.exam || "")}${p.semester ? " · Semester " + escapeHtml(p.semester) : ""}</span>
+                    <a href="${escapeHtml(safeUrl(p.pdf_url))}" target="_blank" rel="noopener">📄 Open PDF</a>
+                </li>`).join("")}
+            </ul>
+        </div>`).join("");
+});
 
 loadFacets();
 </script>
