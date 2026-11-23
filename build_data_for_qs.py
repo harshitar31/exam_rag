@@ -28,7 +28,7 @@ import requests
 from tqdm import tqdm
 
 from cleaning import normalize_course_code, normalize_semester, normalize_year
-from prep_utils import extract_pdf_text, grounded_questions, split_parts
+from prep_utils import extract_pdf_text, grounded_questions, split_parts, split_subparts
 from prompts import METADATA_SYSTEM, QUESTIONS_SYSTEM
 
 # ===================== CONFIG =====================
@@ -74,7 +74,8 @@ def make_questions_examples(full_text, questions):
 
     examples = []
     for section_text in sections:
-        target_qs = grounded_questions(section_text, questions)
+        target_qs = [part for q in grounded_questions(section_text, questions)
+                     for part in split_subparts(q)]
         if len(target_qs) < 2:
             continue
         examples.append({

@@ -109,3 +109,45 @@ def grounded_questions(source_text, questions, min_token_coverage=0.8, min_ngram
             seen.add(key)
             out.append(q)
     return out
+
+
+# ---------------- sub-parts ----------------
+
+# "... b) Discuss", "... (c) Derive", or "b. Explain" at a line/sentence start
+SUBPART_MARKER = re.compile(
+    r"(?:(?<=\s)|^)(?:\(([b-h])\)|([b-h])\))\s+(?=[A-Z])"
+    r"|(?:(?<=\n)|(?<=[.?:)]\s))([b-h])\.\s+(?=[A-Z])")
+# an "a)" / "(a)" / "a." marker after the start means an MCQ option list or a
+# stem with parts -- leave those alone
+A_MARKER = re.compile(r"(?<=\s)(?:\(a\)|a\)|a\.)\s")
+MIN_PART_CHARS = 25
+
+
+def split_subparts(question):
+    """
+    The prompt asks for sub-parts (a), (b), (c) as separate questions, but ~7%
+    of the gpt-oss labels merged them ("Explain X. b) Discuss Y. (6)"), which
+    taught the model to merge too. Split when every part is a real question;
+    otherwise return the question unchanged.
+    """
+    text = question["question_text"]
+    if A_MARKER.search(text):
+        return [question]
+    markers = list(SUBPART_MARKER.finditer(text))
+    letters = [next(g for g in m.groups() if g) for m in markers]
+    if not markers or letters != [chr(ord("b") + i) for i in range(len(letters))]:
+        return [question]
+
+    bounds = [0] + [m.start() for m in markers] + [len(text)]
+    starts = [0] + [m.end() for m in markers]
+    parts = [clean_question_text(text[s:e]) for s, e in zip(starts, bounds[1:])]
+    if any(len(t) < MIN_PART_CHARS for t, _ in parts):
+        return [question]
+
+    part_marks = [m for _, m in parts]
+    if all(m is not None for m in part_marks):
+        marks = part_marks
+    else:
+        # Only a combined mark for the whole question: per-part marks are unknown
+        marks = [None] * len(parts)
+    return [{"question_text": t, "marks": m} for (t, _), m in zip(parts, marks)]

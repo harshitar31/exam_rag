@@ -20,6 +20,7 @@ Usage:
     python evaluate.py                                   # fine-tuned model in exam_rag_model/
     python evaluate.py --model mlx-community/Qwen2.5-3B-Instruct-4bit   # base model, for comparison
     python evaluate.py --tasks metadata                  # quick run
+    python evaluate.py --model mlx-community/Qwen2.5-3B-Instruct-4bit --adapter adapters   # after finetune.sh
 """
 
 import argparse
@@ -47,9 +48,9 @@ MATCH_THRESHOLD = 0.7     # share of a labelled question's words the prediction 
 
 class MLXModel:
     """Apple Silicon (fast). Loads HF-format folders or mlx-community repos."""
-    def __init__(self, path):
+    def __init__(self, path, adapter=None):
         from mlx_lm import load
-        self.model, self.tokenizer = load(path)
+        self.model, self.tokenizer = load(path, adapter_path=adapter)
 
     def chat(self, system, user, max_tokens):
         from mlx_lm import generate
@@ -61,8 +62,10 @@ class MLXModel:
 
 class HFModel:
     """transformers backend, for machines without MLX (e.g. Colab)."""
-    def __init__(self, path):
+    def __init__(self, path, adapter=None):
         import torch
+        if adapter:
+            raise SystemExit("--adapter is only supported with --backend mlx")
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.torch = torch
         self.tokenizer = AutoTokenizer.from_pretrained(path)
@@ -92,6 +95,31 @@ def safe_parse_json(text):
             except json.JSONDecodeError:
                 pass
     return None
+
+
+QUESTION_OBJECT = re.compile(
+    r'\{\s*"question_text"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"marks"\s*:\s*(null|-?\d+)\s*\}')
+
+
+def parse_questions(text):
+    """
+    Questions JSON, or -- when the output was cut off (the model sometimes
+    loops until max_tokens and never closes the array) -- every complete
+    {"question_text": ..., "marks": ...} object it did produce.
+    Returns (questions, complete_json).
+    """
+    parsed = safe_parse_json(text)
+    if isinstance(parsed, dict) and isinstance(parsed.get("questions"), list):
+        return [q for q in parsed["questions"] if isinstance(q, dict) and q.get("question_text")], True
+    questions = []
+    for m in QUESTION_OBJECT.finditer(text):
+        try:
+            question_text = json.loads(f'"{m.group(1)}"')
+        except json.JSONDecodeError:
+            continue
+        questions.append({"question_text": question_text,
+                          "marks": None if m.group(2) == "null" else int(m.group(2))})
+    return questions, False
 
 
 def chunks_for_extraction(full_text):
@@ -160,6 +188,7 @@ def match_questions(pred_qs, gold_qs):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="exam_rag_model")
+    parser.add_argument("--adapter", default=None, help="LoRA adapter folder from finetune.sh")
     parser.add_argument("--backend", choices=["mlx", "hf"], default="mlx")
     parser.add_argument("--tasks", default="metadata,questions")
     parser.add_argument("--labels", default=LABELS_FILE)
@@ -171,8 +200,9 @@ def main():
     with open(args.labels) as f:
         labels = [json.loads(line) for line in f if line.strip()][:args.limit]
 
-    print(f"Loading {args.model} ({args.backend})...")
-    model = (MLXModel if args.backend == "mlx" else HFModel)(args.model)
+    name = args.model + (f" + {args.adapter}" if args.adapter else "")
+    print(f"Loading {name} ({args.backend})...")
+    model = (MLXModel if args.backend == "mlx" else HFModel)(args.model, args.adapter)
 
     rows = []
     for item in labels:
@@ -189,11 +219,15 @@ def main():
 
         if "questions" in tasks:
             pred_qs, parsed_chunks, chunks = [], 0, chunks_for_extraction(full_text)
+            seen = set()
             for chunk in chunks:
-                parsed = safe_parse_json(model.chat(QUESTIONS_SYSTEM, chunk, MAX_NEW_TOKENS_QUESTIONS))
-                if isinstance(parsed, dict) and isinstance(parsed.get("questions"), list):
-                    parsed_chunks += 1
-                    pred_qs.extend(q for q in parsed["questions"] if isinstance(q, dict) and q.get("question_text"))
+                questions, complete = parse_questions(model.chat(QUESTIONS_SYSTEM, chunk, MAX_NEW_TOKENS_QUESTIONS))
+                parsed_chunks += complete
+                for q in questions:
+                    key = norm_text(q["question_text"])
+                    if key not in seen:     # looping output repeats questions
+                        seen.add(key)
+                        pred_qs.append(q)
             matches = match_questions(pred_qs, item["questions"])
             grounded = grounded_questions(full_text, pred_qs)
             row.update({
@@ -213,14 +247,14 @@ def main():
 
     with open(args.output, "w") as f:
         for row in rows:
-            f.write(json.dumps({"model": args.model, **row}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"model": name, **row}, ensure_ascii=False) + "\n")
 
     # ---------- summary ----------
     def mean(values):
         values = [v for v in values if v is not None]
         return sum(values) / len(values) if values else None
 
-    print(f"\n===== {args.model} =====")
+    print(f"\n===== {name} =====")
     for split_name, in_training in (("held-out", False), ("seen in training", True)):
         split = [r for r in rows if r["in_training"] == in_training]
         if not split:
