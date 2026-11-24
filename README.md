@@ -103,6 +103,8 @@ A LoRA fine-tune of Qwen2.5-3B-Instruct replaces the cloud LLM for extraction.
 ```bash
 python fix_training_data.py                # data_v2/ -> data_v3/ (grounded targets, int semesters, valid.jsonl)
 bash finetune.sh                           # MLX LoRA on Apple Silicon
+# or on Google Colab (free T4 GPU): colab/finetune_colab.ipynb, with
+# zip -r colab_bundle.zip data_v3 sample_pdfs evaluate.py prep_utils.py prompts.py cleaning.py
 python evaluate.py                         # score on hand-labelled sample_pdfs/
 python evaluate.py --model mlx-community/Qwen2.5-3B-Instruct-4bit   # base model, for comparison
 ```

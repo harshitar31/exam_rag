@@ -66,19 +66,26 @@ class HFModel:
         import torch
         if adapter:
             raise SystemExit("--adapter is only supported with --backend mlx")
+        import transformers
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.torch = torch
         self.tokenizer = AutoTokenizer.from_pretrained(path)
-        self.model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.float16, device_map="auto")
+        # transformers 4.56 renamed torch_dtype to dtype
+        version = tuple(int(x) for x in transformers.__version__.split(".")[:2])
+        dtype_kw = "dtype" if version >= (4, 56) else "torch_dtype"
+        self.model = AutoModelForCausalLM.from_pretrained(path, device_map="auto", **{dtype_kw: torch.float16})
         self.model.eval()
 
     def chat(self, system, user, max_tokens):
-        inputs = self.tokenizer.apply_chat_template(
+        # Render to text, then tokenize: apply_chat_template's tokenized return
+        # type differs between transformers versions
+        prompt = self.tokenizer.apply_chat_template(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            tokenize=True, add_generation_prompt=True, return_tensors="pt").to(self.model.device)
+            tokenize=False, add_generation_prompt=True)
+        inputs = self.tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to(self.model.device)
         with self.torch.no_grad():
-            out = self.model.generate(input_ids=inputs, max_new_tokens=max_tokens, do_sample=False)
-        return self.tokenizer.decode(out[0][inputs.shape[1]:], skip_special_tokens=True)
+            out = self.model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+        return self.tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
 
 # -------------------- parsing --------------------
